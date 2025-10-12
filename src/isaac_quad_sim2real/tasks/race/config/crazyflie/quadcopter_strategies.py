@@ -43,66 +43,39 @@ class DefaultQuadcopterStrategy:
             }
 
     def get_rewards(self) -> torch.Tensor:
-        """Calculate rewards based on progress, gate passing, and penalties."""
-        # Check to change setpoint
+        """get_rewards() is called per timestep. This is where you define your reward structure and compute them
+        according to the reward scales you tune in train_race.py. The following is an example reward structure that
+        causes the drone to hover near the zeroth gate. It will not produce a racing policy, but simply serves as proof
+        if your PPO implementation works. You should delete it or heavily modify it once you begin the racing task."""
+
+        # TODO ----- START ----- Define the tensors required for your custom reward structure
+        # check to change waypoint
         dist_to_gate = torch.linalg.norm(self.env._pose_drone_wrt_gate, dim=1)
-        gate_passed = (dist_to_gate < 1.0) & \
-                      (self.env._pose_drone_wrt_gate[:, 0] < 0.0) & \
-                      (self.env._prev_x_drone_wrt_gate > 0.0) & \
-                      (torch.abs(self.env._pose_drone_wrt_gate[:, 1]) < self.env._gate_model_cfg_data.gate_side / 2) & \
-                      (torch.abs(self.env._pose_drone_wrt_gate[:, 2]) < self.env._gate_model_cfg_data.gate_side / 2)
-        self.env._prev_x_drone_wrt_gate = self.env._pose_drone_wrt_gate[:, 0].clone()
+        gate_passed = dist_to_gate < 1.0
         ids_gate_passed = torch.where(gate_passed)[0]
-
-        self.env._n_gates_passed[ids_gate_passed] += 1
-
         self.env._idx_wp[ids_gate_passed] = (self.env._idx_wp[ids_gate_passed] + 1) % self.env._waypoints.shape[0]
 
-        lap_completed = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
-        lap_completed[ids_gate_passed] = (self.env._n_gates_passed[ids_gate_passed] > self.env._waypoints.shape[0]) & \
-                                        ((self.env._n_gates_passed[ids_gate_passed] % self.env._waypoints.shape[0]) == 1)
-
+        # set desired positions in the world frame
         self.env._desired_pos_w[ids_gate_passed, :2] = self.env._waypoints[self.env._idx_wp[ids_gate_passed], :2]
-        self.env._desired_pos_w[ids_gate_passed, :2] += self.env._terrain.env_origins[ids_gate_passed, :2]
         self.env._desired_pos_w[ids_gate_passed, 2] = self.env._waypoints[self.env._idx_wp[ids_gate_passed], 2]
 
+        # calculate progress via distance to goal
         distance_to_goal = torch.linalg.norm(self.env._desired_pos_w - self.env._robot.data.root_link_pos_w, dim=1)
-        self.env._last_distance_to_goal[ids_gate_passed] = 1.05 * distance_to_goal[ids_gate_passed].clone()
+        distance_to_goal = torch.tanh(distance_to_goal/3.0)
+        progress = 1 - distance_to_goal  # distance_to_goal is between 0 and 1 where 0 means the drone reached the goal
 
-        drone_pos = self.env._robot.data.root_link_pos_w
-
+        # compute crashed environments if contact detected for 100 timesteps
         contact_forces = self.env._contact_sensor.data.net_forces_w
         crashed = (torch.norm(contact_forces, dim=-1) > 1e-8).squeeze(1).int()
         mask = (self.env.episode_length_buf > 100).int()
         self.env._crashed = self.env._crashed + crashed * mask
+        # TODO ----- END -----
 
         if self.cfg.is_train:
-            progress = self.env._last_distance_to_goal - distance_to_goal
-            self.env._last_distance_to_goal = distance_to_goal.clone()
-
-            roll_pitch_rates = torch.sum(torch.square(self.env._actions[:, 1:3]), dim=1)
-            yaw_rate = torch.square(self.env._actions[:, 3])
-
-            yaw_des = torch.atan2(self.env._desired_pos_w[:, 1] - drone_pos[:, 1],
-                                   self.env._desired_pos_w[:, 0] - drone_pos[:, 0])
-            delta_cam = (self.env.unwrapped_yaw - yaw_des + torch.pi) % (2 * torch.pi) - torch.pi
-            perception = torch.exp(-4 * delta_cam**4)
-
-            attitude_mat = matrix_from_quat(self.env._robot.data.root_quat_w)
-            cos_tilt = attitude_mat[:, 2, 2]
-            tilt_angle = torch.acos(cos_tilt)
-            tilt_arg = self.env.rew["max_tilt_reward_scale"] * (torch.exp(1 * (tilt_angle - self.cfg.max_tilt_thresh) / self.cfg.max_tilt_thresh) - 1.0)
-            tilt = -torch.where(tilt_arg > 0, tilt_arg, 0)
-
+            # TODO ----- START ----- Compute per-timestep rewards by multiplying with your reward scales (in train_race.py)
             rewards = {
-                "gate_passed": gate_passed * self.env.rew['gate_passed_reward_scale'],
                 "progress_goal": progress * self.env.rew['progress_goal_reward_scale'],
-                "roll_pitch_rates": roll_pitch_rates * self.env.rew['roll_pitch_rates_reward_scale'] * self.env.step_dt,
-                "yaw_rate": yaw_rate * self.env.rew["yaw_rate_reward_scale"] * self.env.step_dt,
-                "lap_completed": lap_completed * 100.0 * self.env.rew['lap_completed_reward_scale'],
-                "perception": perception * self.env.rew['perception_reward_scale'] * self.env.step_dt,
                 "crash": crashed * self.env.rew['crash_reward_scale'],
-                "max_tilt": tilt * self.env.step_dt,
             }
             reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
             reward = torch.where(self.env.reset_terminated,
@@ -111,68 +84,33 @@ class DefaultQuadcopterStrategy:
             # Logging
             for key, value in rewards.items():
                 self._episode_sums[key] += value
-        else:
+        else:   # This else condition implies eval is called with play_race.py. Can be useful to debug at test-time
             reward = torch.zeros(self.num_envs, device=self.device)
+            # TODO ----- END -----
 
         return reward
 
     def get_observations(self) -> Dict[str, torch.Tensor]:
-        """Get observations including waypoint positions and drone state."""
-        curr_idx = self.env._idx_wp % self.env._waypoints.shape[0]
-        next_idx = (self.env._idx_wp + 1) % self.env._waypoints.shape[0]
+        """Get observations. Read reset_idx() and quadcopter_env.py to see which drone info is extracted from the sim.
+        The following code is an example. You should delete it or heavily modify it once you begin the racing task."""
 
-        wp_curr_pos = self.env._waypoints[curr_idx, :3]
-        wp_next_pos = self.env._waypoints[next_idx, :3]
-        quat_curr = self.env._waypoints_quat[curr_idx]
-        quat_next = self.env._waypoints_quat[next_idx]
-
-        rot_curr = matrix_from_quat(quat_curr)
-        rot_next = matrix_from_quat(quat_next)
-
-        verts_curr = torch.bmm(self.env._local_square, rot_curr.transpose(1, 2)) + wp_curr_pos.unsqueeze(1) + self.env._terrain.env_origins.unsqueeze(1)
-        verts_next = torch.bmm(self.env._local_square, rot_next.transpose(1, 2)) + wp_next_pos.unsqueeze(1) + self.env._terrain.env_origins.unsqueeze(1)
-
-        waypoint_pos_b_curr, _ = subtract_frame_transforms(
-            self.env._robot.data.root_link_state_w[:, :3].repeat_interleave(4, dim=0),
-            self.env._robot.data.root_link_state_w[:, 3:7].repeat_interleave(4, dim=0),
-            verts_curr.view(-1, 3)
-        )
-        waypoint_pos_b_next, _ = subtract_frame_transforms(
-            self.env._robot.data.root_link_state_w[:, :3].repeat_interleave(4, dim=0),
-            self.env._robot.data.root_link_state_w[:, 3:7].repeat_interleave(4, dim=0),
-            verts_next.view(-1, 3)
-        )
-
-        waypoint_pos_b_curr = waypoint_pos_b_curr.view(self.num_envs, 4, 3)
-        waypoint_pos_b_next = waypoint_pos_b_next.view(self.num_envs, 4, 3)
-
-        quat_w = self.env._robot.data.root_quat_w
-        attitude_mat = matrix_from_quat(quat_w)
+        # TODO ----- START ----- Define tensors for your observation space. Be careful with frame transformations
+        drone_pose_w = self.env._robot.data.root_link_pos_w
+        drone_lin_vel_b = self.env._robot.data.root_com_lin_vel_b
+        drone_quat_w = self.env._robot.data.root_quat_w
+        # TODO ----- END -----
 
         obs = torch.cat(
+            # TODO ----- START ----- List your observation tensors here to be concatenated together
             [
-                *( [self.env._robot.data.root_link_pos_w - self.env._terrain.env_origins[:, :3],] if self.cfg.use_wall else [] ),
-                self.env._robot.data.root_com_lin_vel_b,
-                attitude_mat.view(attitude_mat.shape[0], -1),
-                waypoint_pos_b_curr.view(waypoint_pos_b_curr.shape[0], -1),
-                waypoint_pos_b_next.view(waypoint_pos_b_next.shape[0], -1),
+                drone_pose_w,   # position in the global frame
+                drone_lin_vel_b,    # velocity in the body frame
+                drone_quat_w,   # quaternion in the world frame
             ],
+            # TODO ----- END -----
             dim=-1,
         )
         observations = {"policy": obs}
-
-        # Update yaw tracking
-        rpy = euler_xyz_from_quat(quat_w)
-        yaw_w = wrap_to_pi(rpy[2])
-
-        delta_yaw = yaw_w - self.env._previous_yaw
-        self.env._previous_yaw = yaw_w
-        self.env._yaw_n_laps += torch.where(delta_yaw < -np.pi, 1, 0)
-        self.env._yaw_n_laps -= torch.where(delta_yaw > np.pi, 1, 0)
-
-        self.env.unwrapped_yaw = yaw_w + 2 * np.pi * self.env._yaw_n_laps
-
-        self.env._previous_actions = self.env._actions.clone()
 
         return observations
 
@@ -231,25 +169,28 @@ class DefaultQuadcopterStrategy:
 
         default_root_state = self.env._robot.data.default_root_state[env_ids]
 
-        # Choose reset positions
-        waypoint_indices = torch.randint(0, self.env._waypoints.shape[0], (n_reset,),
-                                        device=self.device, dtype=self.env._idx_wp.dtype)
+        # TODO ----- START ----- Define the initial state during training after resetting an environment.
+        # This example code initializes the drone 2m behind the first gate. You should delete it or heavily
+        # modify it once you begin the racing task.
 
-        # Get random starting poses behind waypoints
+        # start from the zeroth waypoint (beginning of the race)
+        waypoint_indices = torch.zeros(n_reset, device=self.device, dtype=self.env._idx_wp.dtype)
+
+        # get starting poses behind waypoints
         x0_wp = self.env._waypoints[waypoint_indices][:, 0]
         y0_wp = self.env._waypoints[waypoint_indices][:, 1]
         theta = self.env._waypoints[waypoint_indices][:, -1]
         z_wp = self.env._waypoints[waypoint_indices][:, 2]
 
-        x_local = torch.empty(n_reset, device=self.device).uniform_(-2.0, -0.5)
-        y_local = torch.empty(n_reset, device=self.device).uniform_(-0.5, 0.5)
-        z_local = torch.empty(n_reset, device=self.device).uniform_(-0.5, 0.5)
+        x_local = -2.0 * torch.ones(n_reset, device=self.device)
+        y_local = torch.zeros(n_reset, device=self.device)
+        z_local = torch.zeros(n_reset, device=self.device)
 
+        # rotate local pos to global frame
         cos_theta = torch.cos(theta)
         sin_theta = torch.sin(theta)
         x_rot = cos_theta * x_local - sin_theta * y_local
         y_rot = sin_theta * x_local + cos_theta * y_local
-
         initial_x = x0_wp - x_rot
         initial_y = y0_wp - y_rot
         initial_z = z_local + z_wp
@@ -257,79 +198,37 @@ class DefaultQuadcopterStrategy:
         default_root_state[:, 0] = initial_x
         default_root_state[:, 1] = initial_y
         default_root_state[:, 2] = initial_z
-        default_root_state[:, :3] += self.env._terrain.env_origins[env_ids]
 
-        initial_yaw = torch.atan2(-initial_y, -initial_x)
+        # point drone towards the zeroth gate
+        initial_yaw = torch.atan2(y0_wp - initial_y, x0_wp - initial_x)
         quat = quat_from_euler_xyz(
             torch.zeros(1, device=self.device),
             torch.zeros(1, device=self.device),
             initial_yaw + torch.empty(1, device=self.device).uniform_(-0.15, 0.15)
         )
         default_root_state[:, 3:7] = quat
-
-        # Add ground starts after iteration 800
-        if self.env.iteration > 800:
-            percent_ground = 0.1
-            ground_mask = torch.rand(n_reset, device=self.device) < percent_ground
-            ground_local_ids = torch.nonzero(ground_mask, as_tuple=False).squeeze(-1)
-
-            if ground_local_ids.numel() > 0:
-                x_local = torch.empty(len(ground_local_ids), device=self.device).uniform_(-3.0, -0.5)
-                y_local = torch.empty(len(ground_local_ids), device=self.device).uniform_(-1.0, 1.0)
-
-                x0_wp = self.env._waypoints[self.env._initial_wp, 0]
-                y0_wp = self.env._waypoints[self.env._initial_wp, 1]
-                theta = self.env._waypoints[self.env._initial_wp, -1]
-
-                cos_theta, sin_theta = torch.cos(theta), torch.sin(theta)
-                x_rot = cos_theta * x_local - sin_theta * y_local
-                y_rot = sin_theta * x_local + cos_theta * y_local
-
-                x0 = x0_wp - x_rot
-                y0 = y0_wp - y_rot
-                z0 = torch.full((len(ground_local_ids),), 0.05, device=self.device)
-
-                yaw0 = torch.atan2(-y0, -x0) + torch.empty(len(ground_local_ids), device=self.device).uniform_(-0.15, 0.15)
-                quat0 = quat_from_euler_xyz(
-                    torch.zeros(len(ground_local_ids), device=self.device),
-                    torch.zeros(len(ground_local_ids), device=self.device),
-                    yaw0,
-                )
-
-                default_root_state[ground_local_ids, 0] = x0 + self.env._terrain.env_origins[env_ids[ground_local_ids], 0]
-                default_root_state[ground_local_ids, 1] = y0 + self.env._terrain.env_origins[env_ids[ground_local_ids], 1]
-                default_root_state[ground_local_ids, 2] = z0 + self.env._terrain.env_origins[env_ids[ground_local_ids], 2]
-                default_root_state[ground_local_ids, 3:7] = quat0
-
-                waypoint_indices[ground_local_ids] = self.env._initial_wp
+        # TODO ----- END -----
 
         # Handle play mode initial position
         if not self.cfg.is_train:
-            x0 = None
-            y0 = None
-            z0 = None
-            yaw0 = None
+            # x_local and y_local are randomly sampled
+            x_local = torch.empty(1, device=self.device).uniform_(-3.0, -0.5)
+            y_local = torch.empty(1, device=self.device).uniform_(-1.0, 1.0)
 
-            if x0 == None:
-                x_local = torch.empty(1, device=self.device).uniform_(-3.0, -0.5)
-                y_local = torch.empty(1, device=self.device).uniform_(-1.0, 1.0)
+            x0_wp = self.env._waypoints[self.env._initial_wp, 0]
+            y0_wp = self.env._waypoints[self.env._initial_wp, 1]
+            theta = self.env._waypoints[self.env._initial_wp, -1]
 
-                x0_wp = self.env._waypoints[self.env._initial_wp, 0]
-                y0_wp = self.env._waypoints[self.env._initial_wp, 1]
-                theta = self.env._waypoints[self.env._initial_wp, -1]
+            # rotate local pos to global frame
+            cos_theta, sin_theta = torch.cos(theta), torch.sin(theta)
+            x_rot = cos_theta * x_local - sin_theta * y_local
+            y_rot = sin_theta * x_local + cos_theta * y_local
+            x0 = x0_wp - x_rot
+            y0 = y0_wp - y_rot
+            z0 = 0.05
 
-                cos_theta, sin_theta = torch.cos(theta), torch.sin(theta)
-                x_rot = cos_theta * x_local - sin_theta * y_local
-                y_rot = sin_theta * x_local + cos_theta * y_local
-                x0 = x0_wp - x_rot
-                y0 = y0_wp - y_rot
-                z0 = 0.05
-                yaw0 = torch.atan2(-y0, -x0) + torch.empty(1, device=self.device).uniform_(-0.15, 0.15)
-            else:
-                x0 = torch.tensor(x0, device=self.device)
-                y0 = torch.tensor(y0, device=self.device)
-                z0 = torch.tensor(z0, device=self.device)
-                yaw0 = torch.tensor(yaw0, device=self.device)
+            # point drone towards the zeroth gate
+            yaw0 = torch.atan2(y0_wp - y0, x0_wp - x0)
 
             default_root_state = self.env._robot.data.default_root_state[0].unsqueeze(0)
             default_root_state[:, 0] = x0
@@ -342,16 +241,12 @@ class DefaultQuadcopterStrategy:
                 yaw0
             )
             default_root_state[:, 3:7] = quat
-            self.env._n_run += 1
-            print(f'Run #{self.env._n_run}: {x0.item()}, {y0.item()}, {yaw0.item()}')
-
             waypoint_indices = self.env._initial_wp
 
         # Set waypoint indices and desired positions
         self.env._idx_wp[env_ids] = waypoint_indices
 
         self.env._desired_pos_w[env_ids, :2] = self.env._waypoints[waypoint_indices, :2].clone()
-        self.env._desired_pos_w[env_ids, :2] += self.env._terrain.env_origins[env_ids, :2]
         self.env._desired_pos_w[env_ids, 2] = self.env._waypoints[waypoint_indices, 2].clone()
 
         self.env._last_distance_to_goal[env_ids] = torch.linalg.norm(
@@ -367,49 +262,31 @@ class DefaultQuadcopterStrategy:
         self.env._yaw_n_laps[env_ids] = 0
 
         self.env._pose_drone_wrt_gate[env_ids], _ = subtract_frame_transforms(
-            self.env._waypoints[self.env._idx_wp[env_ids], :3] + self.env._terrain.env_origins[env_ids, :3],
+            self.env._waypoints[self.env._idx_wp[env_ids], :3],
             self.env._waypoints_quat[self.env._idx_wp[env_ids], :],
             self.env._robot.data.root_link_state_w[env_ids, :3]
         )
 
-        # Randomize parameters
-        self.env._K_aero[env_ids, :2] = torch.empty(n_reset, 2, device=self.device).uniform_(
-            self.env._k_aero_xy_min, self.env._k_aero_xy_max
-        )
-        self.env._K_aero[env_ids, 2] = torch.empty(n_reset, device=self.device).uniform_(
-            self.env._k_aero_z_min, self.env._k_aero_z_max
-        )
+        # Set parameters to fixed values (no randomization)
+        self.env._K_aero[env_ids, :2] = self.env._k_aero_xy_value
+        self.env._K_aero[env_ids, 2] = self.env._k_aero_z_value
 
-        kp_omega_rp = torch.empty(n_reset, device=self.device).uniform_(
-            self.env._kp_omega_rp_min, self.env._kp_omega_rp_max
-        )
-        ki_omega_rp = torch.empty(n_reset, device=self.device).uniform_(
-            self.env._ki_omega_rp_min, self.env._ki_omega_rp_max
-        )
-        kd_omega_rp = torch.empty(n_reset, device=self.device).uniform_(
-            self.env._kd_omega_rp_min, self.env._kd_omega_rp_max
-        )
+        kp_omega_rp = torch.full((n_reset,), self.env._kp_omega_rp_value, device=self.device)
+        ki_omega_rp = torch.full((n_reset,), self.env._ki_omega_rp_value, device=self.device)
+        kd_omega_rp = torch.full((n_reset,), self.env._kd_omega_rp_value, device=self.device)
 
-        kp_omega_y = torch.empty(n_reset, device=self.device).uniform_(
-            self.env._kp_omega_y_min, self.env._kp_omega_y_max
-        )
-        ki_omega_y = torch.empty(n_reset, device=self.device).uniform_(
-            self.env._ki_omega_y_min, self.env._ki_omega_y_max
-        )
-        kd_omega_y = torch.empty(n_reset, device=self.device).uniform_(
-            self.env._kd_omega_y_min, self.env._kd_omega_y_max
-        )
+        kp_omega_y = torch.full((n_reset,), self.env._kp_omega_y_value, device=self.device)
+        ki_omega_y = torch.full((n_reset,), self.env._ki_omega_y_value, device=self.device)
+        kd_omega_y = torch.full((n_reset,), self.env._kd_omega_y_value, device=self.device)
 
         self.env._kp_omega[env_ids] = torch.stack([kp_omega_rp, kp_omega_rp, kp_omega_y], dim=1)
         self.env._ki_omega[env_ids] = torch.stack([ki_omega_rp, ki_omega_rp, ki_omega_y], dim=1)
         self.env._kd_omega[env_ids] = torch.stack([kd_omega_rp, kd_omega_rp, kd_omega_y], dim=1)
 
-        tau_m = torch.empty(n_reset, device=self.device).uniform_(self.env._tau_m_min, self.env._tau_m_max)
+        tau_m = torch.full((n_reset,), self.env._tau_m_value, device=self.device)
         self.env._tau_m[env_ids] = tau_m.unsqueeze(1).repeat(1, 4)
 
-        self.env._thrust_to_weight[env_ids] = torch.empty(n_reset, device=self.device).uniform_(
-            self.env._twr_min, self.env._twr_max
-        )
+        self.env._thrust_to_weight[env_ids] = self.env._twr_value
 
         self.env._prev_x_drone_wrt_gate = torch.ones(self.num_envs, device=self.device)
 

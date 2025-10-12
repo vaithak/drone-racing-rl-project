@@ -7,6 +7,15 @@
 
 """Launch Isaac Sim Simulator first."""
 
+import sys
+import os
+local_rsl_path = os.path.abspath("src/third_parties/rsl_rl_local")
+if os.path.exists(local_rsl_path):
+    sys.path.insert(0, local_rsl_path)
+    print(f"[INFO] Using local rsl_rl from: {local_rsl_path}")
+else:
+    print(f"[WARNING] Local rsl_rl not found at: {local_rsl_path}")
+
 import argparse
 
 from isaaclab.app import AppLauncher
@@ -41,7 +50,6 @@ simulation_app = app_launcher.app
 """Rest everything follows."""
 
 import gymnasium as gym
-import os
 import torch
 
 from rsl_rl.runners import OnPolicyRunner

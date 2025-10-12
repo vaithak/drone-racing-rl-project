@@ -10,6 +10,7 @@ import statistics
 import time
 import torch
 from collections import deque
+from tensordict import TensorDict
 
 import rsl_rl
 from rsl_rl.algorithms import PPO
@@ -30,7 +31,26 @@ class OnPolicyRunner:
         self.max_reward = 0.0
 
         # resolve dimensions of observations
-        obs, extras = self.env.get_observations()
+        # New IsaacLab format - returns TensorDict
+        obs_data = self.env.get_observations()
+
+        if isinstance(obs_data, TensorDict):
+            obs_dict = dict(obs_data)
+        else:
+            obs_dict = obs_data
+
+        # Extract main observation
+        if "policy" in obs_dict:
+            obs = obs_dict["policy"]
+        elif "obs" in obs_dict:
+            obs = obs_dict["obs"]
+        else:
+            # Use first observation as main
+            keys = list(obs_dict.keys())
+            obs = obs_dict[keys[0]] if keys else torch.zeros(self.env.num_envs, 1)
+
+        # Create extras in expected format
+        extras = {"observations": obs_dict}
         num_obs = obs.shape[1]
         if "critic" in extras["observations"]:
             num_critic_obs = extras["observations"]["critic"].shape[1]
@@ -121,7 +141,24 @@ class OnPolicyRunner:
             )
 
         # start learning
-        obs, extras = self.env.get_observations()
+        # New IsaacLab format - returns TensorDict
+        obs_data = self.env.get_observations()
+
+        if isinstance(obs_data, TensorDict):
+            obs_dict = dict(obs_data)
+        else:
+            obs_dict = obs_data
+
+        # Extract main observation
+        if "policy" in obs_dict:
+            obs = obs_dict["policy"]
+        elif "obs" in obs_dict:
+            obs = obs_dict["obs"]
+        else:
+            keys = list(obs_dict.keys())
+            obs = obs_dict[keys[0]] if keys else torch.zeros(self.env.num_envs, 1)
+
+        extras = {"observations": obs_dict}
         critic_obs = extras["observations"].get("critic", obs)
         obs, critic_obs = obs.to(self.device), critic_obs.to(self.device)
         self.train_mode()  # switch to train mode (for dropout for example)
@@ -150,7 +187,25 @@ class OnPolicyRunner:
                     # Sample actions from policy
                     actions = self.alg.act(obs, critic_obs)
                     # Step environment
-                    obs, rewards, dones, infos = self.env.step(actions.to(self.env.device))
+                    obs_data, rewards, dones, infos = self.env.step(actions.to(self.env.device))
+
+                    # New format - convert TensorDict to tensor
+                    if isinstance(obs_data, TensorDict):
+                        obs_dict = dict(obs_data)
+                    else:
+                        obs_dict = obs_data
+
+                    if "policy" in obs_dict:
+                        obs = obs_dict["policy"]
+                    elif "obs" in obs_dict:
+                        obs = obs_dict["obs"]
+                    else:
+                        keys = list(obs_dict.keys())
+                        obs = obs_dict[keys[0]] if keys else torch.zeros(self.env.num_envs, 1)
+
+                    # Add observations to infos if not present
+                    if "observations" not in infos:
+                        infos["observations"] = obs_dict
 
                     # Move to the agent device
                     obs, rewards, dones = obs.to(self.device), rewards.to(self.device), dones.to(self.device)

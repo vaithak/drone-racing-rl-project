@@ -133,13 +133,7 @@ class QuadcopterEnvCfg(DirectRLEnvCfg):
     # env
     episode_length_s = 30.0             # episode_length = episode_length_s / dt / decimation
     action_space = 4
-    observation_space = (
-        (3 if use_wall else 0) +   # global position (only with wall)
-         3 +                        # linear velocity
-         9 +                        # attitude matrix
-        12 +                        # relative desired position vertices waypoint 1
-        12                          # relative desired position vertices waypoint 2
-    )
+    observation_space = 1 # inconsequential, just needs to exist for Gymnasium compatibility
     state_space = 0
     debug_vis = True
 
@@ -178,7 +172,7 @@ class QuadcopterEnvCfg(DirectRLEnvCfg):
     )
 
     # scene
-    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=4096, env_spacing=10.0, replicate_physics=True)
+    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=4096, env_spacing=0.0, replicate_physics=True)
     gate_model: GateModelCfg = field(default_factory=GateModelCfg)
 
     # robot
@@ -341,50 +335,16 @@ class QuadcopterEnv(DirectRLEnv):
 
         self._thrust_to_weight = torch.zeros(self.num_envs, device=self.device)
 
-        # Values for randomization
-        if self.cfg.is_train:
-            # TWR
-            self._twr_min = self.cfg.thrust_to_weight
-            self._twr_max = self.cfg.thrust_to_weight
-
-            # Aerodynamics
-            self._k_aero_xy_min = self.cfg.k_aero_xy * 0.5
-            self._k_aero_xy_max = self.cfg.k_aero_xy * 2.0
-            self._k_aero_z_min = self.cfg.k_aero_z * 0.5
-            self._k_aero_z_max = self.cfg.k_aero_z * 2.0
-
-            # PID gains
-            self._kp_omega_rp_min = self.cfg.kp_omega_rp * 0.85
-            self._kp_omega_rp_max = self.cfg.kp_omega_rp * 1.15
-            self._ki_omega_rp_min = self.cfg.ki_omega_rp * 0.85
-            self._ki_omega_rp_max = self.cfg.ki_omega_rp * 1.15
-            self._kd_omega_rp_min = self.cfg.kd_omega_rp * 0.7
-            self._kd_omega_rp_max = self.cfg.kd_omega_rp * 1.2
-
-            self._kp_omega_y_min = self.cfg.kp_omega_y * 0.85
-            self._kp_omega_y_max = self.cfg.kp_omega_y * 1.15
-            self._ki_omega_y_min = self.cfg.ki_omega_y * 0.85
-            self._ki_omega_y_max = self.cfg.ki_omega_y * 1.15
-            self._kd_omega_y_min = self.cfg.kd_omega_y * 0.7
-            self._kd_omega_y_max = self.cfg.kd_omega_y * 1.2
-
-            # Motor parameters
-            self._tau_m_min = self.cfg.tau_m * 0.2
-            self._tau_m_max = self.cfg.tau_m * 2.0
-        else:
-            self._twr_min = self._twr_max = self.cfg.thrust_to_weight
-
-            self._k_aero_xy_min = self._k_aero_xy_max = self.cfg.k_aero_xy
-            self._k_aero_z_min = self._k_aero_z_max = self.cfg.k_aero_z
-
-            self._kp_omega_rp_min = self._kp_omega_rp_max = self.cfg.kp_omega_rp
-            self._ki_omega_rp_min = self._ki_omega_rp_max = self.cfg.ki_omega_rp
-            self._kd_omega_rp_min = self._kd_omega_rp_max = self.cfg.kd_omega_rp
-            self._kp_omega_y_min = self._kp_omega_y_max = self.cfg.kp_omega_y
-            self._ki_omega_y_min = self._ki_omega_y_max = self.cfg.ki_omega_y
-            self._kd_omega_y_min = self._kd_omega_y_max = self.cfg.kd_omega_y
-
-            self._tau_m_min = self._tau_m_max = self.cfg.tau_m
+        self._twr_value = self.cfg.thrust_to_weight
+        self._k_aero_xy_value = self.cfg.k_aero_xy
+        self._k_aero_z_value = self.cfg.k_aero_z
+        self._kp_omega_rp_value = self.cfg.kp_omega_rp
+        self._ki_omega_rp_value = self.cfg.ki_omega_rp
+        self._kd_omega_rp_value = self.cfg.kd_omega_rp
+        self._kp_omega_y_value = self.cfg.kp_omega_y
+        self._ki_omega_y_value = self.cfg.ki_omega_y
+        self._kd_omega_y_value = self.cfg.kd_omega_y
+        self._tau_m_value = self.cfg.tau_m
 
     def update_iteration(self, iter):
         self.iteration = iter
@@ -478,13 +438,9 @@ class QuadcopterEnv(DirectRLEnv):
 
             euler_np = euler_angles_tensor.cpu().numpy()
             rot_from_euler = R.from_euler('xyz', euler_np)
-
-            # scipy version (1.6.1) does not accept 'scalar_first'
             quat_xyzw = rot_from_euler.as_quat()  # shape: (4,) as [x, y, z, w]
             quat_wxyz = np.roll(quat_xyzw, shift=1)  # now [w, x, y, z]
             self._waypoints_quat[i, :] = torch.tensor(quat_wxyz, device=self.device, dtype=torch.float32)
-
-            # self._waypoints_quat[i, :] = torch.tensor(rot_from_euler.as_quat(scalar_first=True), device=self.device, dtype=torch.float32)
             rotmat_np_gate = rot_from_euler.as_matrix()
             gate_normal_np = rotmat_np_gate[:, 0] 
             self._normal_vectors[i, :] = torch.tensor(gate_normal_np, device=self.device, dtype=torch.float32)
@@ -681,7 +637,7 @@ class QuadcopterEnv(DirectRLEnv):
         # Compute drag
         lin_vel_b = self._robot.data.root_com_lin_vel_b
         theta_dot = torch.sum(self._motor_speeds, dim=1, keepdim=True)
-        drag = -theta_dot * self._K_aero.unsqueeze(0) * lin_vel_b# * self._gravity_magnitude
+        drag = -theta_dot * self._K_aero.unsqueeze(0) * lin_vel_b
 
         self._thrust[:, 0, :] = drag
         self._thrust[:, 0, 2] += wrench[:, 0]
@@ -691,13 +647,13 @@ class QuadcopterEnv(DirectRLEnv):
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         drone_pose = self._robot.data.root_link_state_w[:, :3]
-        self._pose_drone_wrt_gate, _ = subtract_frame_transforms(self._waypoints[self._idx_wp, :3] + self._terrain.env_origins,
+        self._pose_drone_wrt_gate, _ = subtract_frame_transforms(self._waypoints[self._idx_wp, :3],
                                                                  self._waypoints_quat[self._idx_wp, :],
                                                                  drone_pose)
 
         episode_time = self.episode_length_buf * self.cfg.sim.dt * self.cfg.decimation
         cond_h_min_time = torch.logical_and(
-            self._robot.data.root_link_pos_w[:, 2] < self.cfg.min_altitude, \
+            self._robot.data.root_link_pos_w[:, 2] < self.cfg.min_altitude,
             episode_time > self.cfg.max_time_on_ground
         )
 
@@ -745,14 +701,6 @@ class QuadcopterEnv(DirectRLEnv):
         time_out = self.episode_length_buf >= self.max_episode_length - 1
         if not self.cfg.is_train:
             time_out = time_out | ((self._n_gates_passed - 1) // (self._waypoints.shape[0]) >= self.cfg.max_n_laps)
-
-        if not self.cfg.is_train and (died or time_out):
-            print(f'cond_max_h = {cond_max_h.item()}')
-            print(f'cond_h_min_time = {cond_h_min_time.item()}')
-            print(f'cond_crashed = {cond_crashed.item()}')
-            print(f'timeout = {time_out.item()}')
-            print(f'episode length = {self.episode_length_buf.item()}')
-            print()
 
         return died, time_out
 

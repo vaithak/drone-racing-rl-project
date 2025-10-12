@@ -17,7 +17,7 @@ class QuadcopterPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     empirical_normalization = False
     policy = RslRlPpoActorCriticCfg(
         init_noise_std=1.0,
-        actor_hidden_dims=[512, 512, 256, 128],
+        actor_hidden_dims=[128, 128],
         critic_hidden_dims=[512, 512, 256, 256, 128, 128],
         activation="elu",
         min_std=0.0,

@@ -7,7 +7,16 @@
 
 """Launch Isaac Sim Simulator first."""
 
-import sys, argparse
+import sys
+import os
+local_rsl_path = os.path.abspath("src/third_parties/rsl_rl_local")
+if os.path.exists(local_rsl_path):
+    sys.path.insert(0, local_rsl_path)
+    print(f"[INFO] Using local rsl_rl from: {local_rsl_path}")
+else:
+    print(f"[WARNING] Local rsl_rl not found at: {local_rsl_path}")
+
+import argparse
 
 from isaaclab.app import AppLauncher
 
@@ -43,7 +52,6 @@ simulation_app = app_launcher.app
 """Rest everything follows."""
 
 import gymnasium as gym
-import os
 import torch
 from datetime import datetime
 
@@ -98,41 +106,18 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         log_dir += f"_{agent_cfg.run_name}"
     log_dir = os.path.join(log_root_path, log_dir)
 
-    ####################
+    # TODO ----- START ----- Define rewards scales
     # reward scales
-    # sparse
-    # gate_passed_reward_scale = 10.0
-    # lap_completed_reward_scale = 0.5
-    # progress_goal_reward_scale = 0.0
-    # roll_pitch_rates_reward_scale = -0.15
-    # yaw_rate_reward_scale = -0.05
-    # perception_reward_scale = 0.0               # > 0
-    # max_tilt_reward_scale = 0.0                 # > 0
-    # crash_reward = -0.1
-    # death_cost = -2.0
-
-    # dense
-    gate_passed_reward_scale = 0.0
-    lap_completed_reward_scale = 0.0
     progress_goal_reward_scale = 50.0
-    roll_pitch_rates_reward_scale = -0.1
-    yaw_rate_reward_scale = -0.1
-    perception_reward_scale = 0.0                 # > 0
-    max_tilt_reward_scale = 0.0                   # > 0
     crash_reward = -1.0
     death_cost = -10.0
 
     rewards = {
-        'gate_passed_reward_scale': gate_passed_reward_scale,
-        'lap_completed_reward_scale': lap_completed_reward_scale,
         'progress_goal_reward_scale': progress_goal_reward_scale,
-        'roll_pitch_rates_reward_scale': roll_pitch_rates_reward_scale,
-        'yaw_rate_reward_scale': yaw_rate_reward_scale,
-        'perception_reward_scale': perception_reward_scale,
-        'max_tilt_reward_scale': max_tilt_reward_scale,
         'crash_reward_scale': crash_reward,
         'death_cost': death_cost,
     }
+    # TODO ----- END -----
 
     env_cfg.is_train = True
     env_cfg.rewards = rewards
