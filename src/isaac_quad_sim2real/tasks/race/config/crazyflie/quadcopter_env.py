@@ -659,42 +659,18 @@ class QuadcopterEnv(DirectRLEnv):
 
         cond_max_h = self._robot.data.root_link_pos_w[:, 2] > self.cfg.max_altitude
 
+        # self._crashed is computed in get_rewards() in quadcopter_strategies.py.
         cond_crashed = self._crashed > 100
 
-        # -------------------------
-        # Condition: drone stuck
-        # -------------------------
-        # threshold on displacement (meters)
-        stuck_threshold = 0.05
-        # how many steps allowed without moving
-        max_stuck_steps = 400
-
-        # initialize buffer if not existing
-        if not hasattr(self, "_stuck_counter"):
-            self._stuck_counter = torch.zeros(drone_pose.shape[0], dtype=torch.long, device=drone_pose.device)
-            self._prev_pos = drone_pose.clone()
-
-        # displacement norm wrt previous step
-        displacement = torch.norm(drone_pose - self._prev_pos, dim=1)
-
-        # update counter: increment if below threshold, reset if moved enough
-        self._stuck_counter = torch.where(
-            displacement < stuck_threshold,
-            self._stuck_counter + 1,
-            torch.zeros_like(self._stuck_counter),
-        )
-
-        # save current position for next call
-        self._prev_pos = drone_pose.clone()
-
-        cond_stuck = self._stuck_counter > max_stuck_steps
-        # -------------------------
+        #TODO ----- START ----- [OPTIONAL]
+        # Consider adding additional _get_dones() conditions to influence training. Note that the additional conditions
+        # will not be used during runtime for the official class race.
+        #TODO ----- END ----- [OPTIONAL]
 
         died = (
             cond_max_h
           | cond_h_min_time
           | cond_crashed
-          | cond_stuck
         )
 
         # timeout conditions
