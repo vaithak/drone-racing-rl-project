@@ -61,23 +61,7 @@ class OnPolicyRunner:
             num_obs, num_critic_obs, self.env.num_actions, **self.policy_cfg
         ).to(self.device)
 
-        # resolve dimension of rnd gated state
-        if "rnd_cfg" in self.alg_cfg:
-            # check if rnd gated state is present
-            rnd_state = extras["observations"].get("rnd_state")
-            if rnd_state is None:
-                raise ValueError("Observations for they key 'rnd_state' not found in infos['observations'].")
-            # get dimension of rnd gated state
-            num_rnd_state = rnd_state.shape[1]
-            # add rnd gated state to config
-            self.alg_cfg["rnd_cfg"]["num_state"] = num_rnd_state
-            # scale down the rnd weight with timestep (similar to how rewards are scaled down in legged_gym envs)
-            self.alg_cfg["rnd_cfg"]["weight"] *= env.dt
-
-        # if using symmetry then pass the environment config object
-        if "symmetry_cfg" in self.alg_cfg:
-            # this is used by the symmetry function for handling different observation terms
-            self.alg_cfg["symmetry_cfg"]["_env"] = env
+        # Note: RND and symmetry functionality have been removed from the PPO implementation
 
         # init algorithm
         alg_class = eval(self.alg_cfg.pop("class_name"))  # PPO
@@ -169,12 +153,6 @@ class OnPolicyRunner:
         lenbuffer = deque(maxlen=100)
         cur_reward_sum = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
         cur_episode_length = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
-        # create buffers for logging extrinsic and intrinsic rewards
-        if self.alg.rnd:
-            erewbuffer = deque(maxlen=100)
-            irewbuffer = deque(maxlen=100)
-            cur_ereward_sum = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
-            cur_ireward_sum = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
 
         start_iter = self.current_learning_iteration
         tot_iter = start_iter + num_learning_iterations
@@ -218,9 +196,6 @@ class OnPolicyRunner:
                     else:
                         critic_obs = obs
 
-                    # Intrinsic rewards (extracted here only for logging)!
-                    intrinsic_rewards = self.alg.intrinsic_rewards if self.alg.rnd else None
-
                     # Process env step and store in buffer
                     self.alg.process_env_step(rewards, dones, infos)
 
@@ -231,27 +206,15 @@ class OnPolicyRunner:
                         elif "log" in infos:
                             ep_infos.append(infos["log"])
                         # Update rewards
-                        if self.alg.rnd:
-                            cur_ereward_sum += rewards
-                            cur_ireward_sum += intrinsic_rewards  # type: ignore
-                            cur_reward_sum += rewards + intrinsic_rewards
-                        else:
-                            cur_reward_sum += rewards
+                        cur_reward_sum += rewards
                         # Update episode length
                         cur_episode_length += 1
                         # Clear data for completed episodes
-                        # -- common
                         new_ids = (dones > 0).nonzero(as_tuple=False)
                         rewbuffer.extend(cur_reward_sum[new_ids][:, 0].cpu().numpy().tolist())
                         lenbuffer.extend(cur_episode_length[new_ids][:, 0].cpu().numpy().tolist())
                         cur_reward_sum[new_ids] = 0
                         cur_episode_length[new_ids] = 0
-                        # -- intrinsic and extrinsic rewards
-                        if self.alg.rnd:
-                            erewbuffer.extend(cur_ereward_sum[new_ids][:, 0].cpu().numpy().tolist())
-                            irewbuffer.extend(cur_ireward_sum[new_ids][:, 0].cpu().numpy().tolist())
-                            cur_ereward_sum[new_ids] = 0
-                            cur_ireward_sum[new_ids] = 0
 
                 stop = time.time()
                 collection_time = stop - start
@@ -262,7 +225,7 @@ class OnPolicyRunner:
 
             # Update policy
             # Note: we keep arguments here since locals() loads them
-            mean_value_loss, mean_surrogate_loss, mean_entropy, mean_rnd_loss, mean_symmetry_loss = self.alg.update()
+            mean_value_loss, mean_surrogate_loss, mean_entropy = self.alg.update()
             stop = time.time()
             learn_time = stop - start
             self.current_learning_iteration = it
@@ -331,10 +294,6 @@ class OnPolicyRunner:
         self.writer.add_scalar("Loss/surrogate", locs["mean_surrogate_loss"], locs["it"])
         self.writer.add_scalar("Loss/entropy", locs["mean_entropy"], locs["it"])
         self.writer.add_scalar("Loss/learning_rate", self.alg.learning_rate, locs["it"])
-        if self.alg.rnd:
-            self.writer.add_scalar("Loss/rnd", locs["mean_rnd_loss"], locs["it"])
-        if self.alg.symmetry:
-            self.writer.add_scalar("Loss/symmetry", locs["mean_symmetry_loss"], locs["it"])
 
         # -- Policy
         self.writer.add_scalar("Policy/mean_noise_std", mean_std.item(), locs["it"])
@@ -346,12 +305,6 @@ class OnPolicyRunner:
 
         # -- Training
         if len(locs["rewbuffer"]) > 0:
-            # separate logging for intrinsic and extrinsic rewards
-            if self.alg.rnd:
-                self.writer.add_scalar("Rnd/mean_extrinsic_reward", statistics.mean(locs["erewbuffer"]), locs["it"])
-                self.writer.add_scalar("Rnd/mean_intrinsic_reward", statistics.mean(locs["irewbuffer"]), locs["it"])
-                self.writer.add_scalar("Rnd/weight", self.alg.rnd.weight, locs["it"])
-            # everything else
             self.writer.add_scalar("Train/mean_reward", statistics.mean(locs["rewbuffer"]), locs["it"])
             self.writer.add_scalar("Train/mean_episode_length", statistics.mean(locs["lenbuffer"]), locs["it"])
             if self.logger_type != "wandb":  # wandb does not support non-integer x-axis logging
@@ -374,22 +327,9 @@ class OnPolicyRunner:
                             'collection_time']:.3f}s, learning {locs['learn_time']:.3f}s)\n"""
                 f"""{'Value function loss:':>{pad}} {locs['mean_value_loss']:.4f}\n"""
                 f"""{'Surrogate loss:':>{pad}} {locs['mean_surrogate_loss']:.4f}\n"""
+                f"""{'Mean action noise std:':>{pad}} {mean_std.item():.2f}\n"""
+                f"""{'Mean total reward:':>{pad}} {statistics.mean(locs['rewbuffer']):.2f}\n"""
             )
-
-            # -- For symmetry
-            if self.alg.symmetry:
-                log_string += f"""{'Symmetry loss:':>{pad}} {locs['mean_symmetry_loss']:.4f}\n"""
-
-            log_string += f"""{'Mean action noise std:':>{pad}} {mean_std.item():.2f}\n"""
-
-            # -- For RND
-            if self.alg.rnd:
-                log_string += (
-                    f"""{'Mean extrinsic reward:':>{pad}} {statistics.mean(locs['erewbuffer']):.2f}\n"""
-                    f"""{'Mean intrinsic reward:':>{pad}} {statistics.mean(locs['irewbuffer']):.2f}\n"""
-                )
-
-            log_string += f"""{'Mean total reward:':>{pad}} {statistics.mean(locs['rewbuffer']):.2f}\n"""
             log_string += f"""{'Mean episode length:':>{pad}} {statistics.mean(locs['lenbuffer']):.2f}\n"""
             #   f"""{'Mean reward/step:':>{pad}} {locs['mean_reward']:.2f}\n"""
             #   f"""{'Mean episode length/episode:':>{pad}} {locs['mean_trajectory_length']:.2f}\n""")
@@ -401,12 +341,8 @@ class OnPolicyRunner:
                             'collection_time']:.3f}s, learning {locs['learn_time']:.3f}s)\n"""
                 f"""{'Value function loss:':>{pad}} {locs['mean_value_loss']:.4f}\n"""
                 f"""{'Surrogate loss:':>{pad}} {locs['mean_surrogate_loss']:.4f}\n"""
+                f"""{'Mean action noise std:':>{pad}} {mean_std.item():.2f}\n"""
             )
-            # -- For symmetry
-            if self.alg.symmetry:
-                log_string += f"""{'Symmetry loss:':>{pad}} {locs['mean_symmetry_loss']:.4f}\n"""
-
-            log_string += f"""{'Mean action noise std:':>{pad}} {mean_std.item():.2f}\n"""
 
             #   f"""{'Mean reward/step:':>{pad}} {locs['mean_reward']:.2f}\n"""
             #   f"""{'Mean episode length/episode:':>{pad}} {locs['mean_trajectory_length']:.2f}\n""")
@@ -430,10 +366,6 @@ class OnPolicyRunner:
             "iter": self.current_learning_iteration,
             "infos": infos,
         }
-        # -- Save RND model if used
-        if self.alg.rnd:
-            saved_dict["rnd_state_dict"] = self.alg.rnd.state_dict()
-            saved_dict["rnd_optimizer_state_dict"] = self.alg.rnd_optimizer.state_dict()
         # -- Save observation normalizer if used
         if self.empirical_normalization:
             saved_dict["obs_norm_state_dict"] = self.obs_normalizer.state_dict()
@@ -448,20 +380,13 @@ class OnPolicyRunner:
         loaded_dict = torch.load(path, weights_only=False)
         # -- Load PPO model
         self.alg.actor_critic.load_state_dict(loaded_dict["model_state_dict"])
-        # -- Load RND model if used
-        if self.alg.rnd:
-            self.alg.rnd.load_state_dict(loaded_dict["rnd_state_dict"])
         # -- Load observation normalizer if used
         if self.empirical_normalization:
             self.obs_normalizer.load_state_dict(loaded_dict["obs_norm_state_dict"])
             self.critic_obs_normalizer.load_state_dict(loaded_dict["critic_obs_norm_state_dict"])
         # -- Load optimizer if used
         if load_optimizer:
-            # -- PPO
             self.alg.optimizer.load_state_dict(loaded_dict["optimizer_state_dict"])
-            # -- RND optimizer if used
-            if self.alg.rnd:
-                self.alg.rnd_optimizer.load_state_dict(loaded_dict["rnd_optimizer_state_dict"])
         # -- Load current learning iteration
         self.current_learning_iteration = loaded_dict["iter"]
         return loaded_dict["infos"]
@@ -480,9 +405,6 @@ class OnPolicyRunner:
     def train_mode(self):
         # -- PPO
         self.alg.actor_critic.train()
-        # -- RND
-        if self.alg.rnd:
-            self.alg.rnd.train()
         # -- Normalization
         if self.empirical_normalization:
             self.obs_normalizer.train()
@@ -491,9 +413,6 @@ class OnPolicyRunner:
     def eval_mode(self):
         # -- PPO
         self.alg.actor_critic.eval()
-        # -- RND
-        if self.alg.rnd:
-            self.alg.rnd.eval()
         # -- Normalization
         if self.empirical_normalization:
             self.obs_normalizer.eval()

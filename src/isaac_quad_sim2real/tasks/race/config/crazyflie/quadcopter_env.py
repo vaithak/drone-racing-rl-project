@@ -304,9 +304,6 @@ class QuadcopterEnv(DirectRLEnv):
         )
         self.TM_to_f = torch.linalg.inv(self.f_to_TM)
 
-        # Initialize the strategy for rewards, observations, and resets
-        self.strategy = self.cfg.strategy_class(self)
-
         # Get specific body indices
         self._body_id = self._robot.find_bodies("body")[0]
         self._robot_mass = self._robot.root_physx_view.get_masses()[0].sum()
@@ -315,26 +312,16 @@ class QuadcopterEnv(DirectRLEnv):
 
         self.inertia_tensor = self._robot.root_physx_view.get_inertias()[0, self._body_id, :].view(-1, 3, 3).tile(self.num_envs, 1, 1).to(self.device)
 
-        self.set_debug_vis(self.cfg.debug_vis)
-
-        self._pose_drone_wrt_gate = torch.zeros(self.num_envs, 3, device=self.device)
-        self._prev_x_drone_wrt_gate = torch.ones(self.num_envs, device=self.device)
-        self._initial_wp = 0
-
-        self._n_run = 0
-
+        # Initialize parameter tensors and values (must be done before strategy initialization)
         self._K_aero = torch.zeros(self.num_envs, 3, device=self.device)
-
         self._kp_omega = torch.zeros(self.num_envs, 3, device=self.device)
         self._ki_omega = torch.zeros(self.num_envs, 3, device=self.device)
         self._kd_omega = torch.zeros(self.num_envs, 3, device=self.device)
-
         self._tau_m = torch.zeros(self.num_envs, 4, device=self.device)
-
         self._omega_err_integral = torch.zeros(self.num_envs, 3, device=self.device)
-
         self._thrust_to_weight = torch.zeros(self.num_envs, device=self.device)
 
+        # Store fixed parameter values
         self._twr_value = self.cfg.thrust_to_weight
         self._k_aero_xy_value = self.cfg.k_aero_xy
         self._k_aero_z_value = self.cfg.k_aero_z
@@ -345,6 +332,18 @@ class QuadcopterEnv(DirectRLEnv):
         self._ki_omega_y_value = self.cfg.ki_omega_y
         self._kd_omega_y_value = self.cfg.kd_omega_y
         self._tau_m_value = self.cfg.tau_m
+
+        # Initialize the strategy for rewards, observations, and resets
+        # Strategy __init__ may set fixed parameter values using the _value attributes above
+        self.strategy = self.cfg.strategy_class(self)
+
+        # Initialize other state variables
+        self._pose_drone_wrt_gate = torch.zeros(self.num_envs, 3, device=self.device)
+        self._prev_x_drone_wrt_gate = torch.ones(self.num_envs, device=self.device)
+        self._initial_wp = 0
+        self._n_run = 0
+
+        self.set_debug_vis(self.cfg.debug_vis)
 
     def update_iteration(self, iter):
         self.iteration = iter
