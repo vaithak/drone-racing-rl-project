@@ -15,10 +15,11 @@ class QuadcopterPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     save_interval = 50
     experiment_name = "quadcopter_direct"
     empirical_normalization = False
+    wandb_project = "ese651_quadcopter"  # Wandb project name for logging
     policy = RslRlPpoActorCriticCfg(
         init_noise_std=1.0,
         actor_hidden_dims=[128, 128],
-        critic_hidden_dims=[512, 512, 256, 256, 128, 128],
+        critic_hidden_dims=[512, 256, 128, 128],
         activation="elu",
         min_std=0.0,
     )
