@@ -618,6 +618,9 @@ class QuadcopterEnv(DirectRLEnv):
         self._actions = actions.clone().clamp(-1.0, 1.0)    # actions come directly from the NN
         self._actions = self.cfg.beta * self._actions + (1 - self.cfg.beta) * self._previous_actions
 
+        # Store current actions for next timestep (for action smoothing and observations)
+        self._previous_actions = self._actions.clone()
+
         self._wrench_des[:, 0] = ((self._actions[:, 0] + 1.0) / 2.0) * self._robot_weight * self._thrust_to_weight
         self.pid_loop_counter = 0
 
