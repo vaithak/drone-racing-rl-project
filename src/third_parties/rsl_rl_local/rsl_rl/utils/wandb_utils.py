@@ -27,14 +27,30 @@ class WandbSummaryWriter(SummaryWriter):
         except KeyError:
             raise KeyError("Please specify wandb_project in the runner config, e.g. legged_gym.")
 
-        try:
-            entity = os.environ["WANDB_USERNAME"]
-        except KeyError:
-            raise KeyError(
-                "Wandb username not found. Please run or add to ~/.bashrc: export WANDB_USERNAME=YOUR_USERNAME"
-            )
+        # Try to get entity from environment variables
+        # First check for WANDB_ENTITY (team/organization), then WANDB_USERNAME (personal)
+        entity = os.environ.get("WANDB_ENTITY", os.environ.get("WANDB_USERNAME", None))
 
-        wandb.init(project=project, entity=entity)
+        if entity is None:
+            # If no entity is specified, let wandb use the default from login
+            print("[INFO] No WANDB_ENTITY or WANDB_USERNAME found. Using default entity from wandb login.")
+            entity = None  # wandb.init will use default entity
+        else:
+            print(f"[INFO] Using wandb entity: {entity}")
+
+        # Initialize wandb run
+        try:
+            wandb.init(project=project, entity=entity)
+            print(f"[INFO] Successfully initialized wandb run in {entity}/{project}")
+        except wandb.errors.CommError as e:
+            if "permission denied" in str(e).lower():
+                print(f"[ERROR] Permission denied for entity '{entity}' in project '{project}'")
+                print(f"[INFO] Trying with personal account instead...")
+                # Try with no entity (uses default from wandb login)
+                wandb.init(project=project)
+                print(f"[INFO] Successfully initialized wandb run with default entity")
+            else:
+                raise
 
         # Change generated name to project-number format
         wandb.run.name = project + wandb.run.name.split("-")[-1]

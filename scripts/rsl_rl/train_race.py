@@ -9,6 +9,7 @@
 
 import sys
 import os
+
 local_rsl_path = os.path.abspath("src/third_parties/rsl_rl_local")
 if os.path.exists(local_rsl_path):
     sys.path.insert(0, local_rsl_path)
@@ -16,12 +17,10 @@ if os.path.exists(local_rsl_path):
 else:
     print(f"[WARNING] Local rsl_rl not found at: {local_rsl_path}")
 
+from rsl_rl.utils import wandb_fix
 import argparse
-
 from isaaclab.app import AppLauncher
-
-# local imports
-import cli_args  # isort: skip
+import cli_args
 
 # add argparse arguments
 parser = argparse.ArgumentParser(description="Train an RL agent with RSL-RL.")
