@@ -42,6 +42,29 @@ class DefaultQuadcopterStrategy:
                 for key in keys
             }
 
+        # Initialize fixed parameters once (no domain randomization)
+        # These parameters remain constant throughout the simulation
+        # Aerodynamic drag coefficients
+        self.env._K_aero[:, :2] = self.env._k_aero_xy_value
+        self.env._K_aero[:, 2] = self.env._k_aero_z_value
+
+        # PID controller gains for angular rate control
+        # Roll and pitch use the same gains
+        self.env._kp_omega[:, :2] = self.env._kp_omega_rp_value
+        self.env._ki_omega[:, :2] = self.env._ki_omega_rp_value
+        self.env._kd_omega[:, :2] = self.env._kd_omega_rp_value
+
+        # Yaw has different gains
+        self.env._kp_omega[:, 2] = self.env._kp_omega_y_value
+        self.env._ki_omega[:, 2] = self.env._ki_omega_y_value
+        self.env._kd_omega[:, 2] = self.env._kd_omega_y_value
+
+        # Motor time constants (same for all 4 motors)
+        self.env._tau_m[:] = self.env._tau_m_value
+
+        # Thrust to weight ratio
+        self.env._thrust_to_weight[:] = self.env._twr_value
+
     def get_rewards(self) -> torch.Tensor:
         """get_rewards() is called per timestep. This is where you define your reward structure and compute them
         according to the reward scales you tune in train_race.py. The following is an example reward structure that
@@ -267,26 +290,8 @@ class DefaultQuadcopterStrategy:
             self.env._robot.data.root_link_state_w[env_ids, :3]
         )
 
-        # Set parameters to fixed values (no randomization)
-        self.env._K_aero[env_ids, :2] = self.env._k_aero_xy_value
-        self.env._K_aero[env_ids, 2] = self.env._k_aero_z_value
-
-        kp_omega_rp = torch.full((n_reset,), self.env._kp_omega_rp_value, device=self.device)
-        ki_omega_rp = torch.full((n_reset,), self.env._ki_omega_rp_value, device=self.device)
-        kd_omega_rp = torch.full((n_reset,), self.env._kd_omega_rp_value, device=self.device)
-
-        kp_omega_y = torch.full((n_reset,), self.env._kp_omega_y_value, device=self.device)
-        ki_omega_y = torch.full((n_reset,), self.env._ki_omega_y_value, device=self.device)
-        kd_omega_y = torch.full((n_reset,), self.env._kd_omega_y_value, device=self.device)
-
-        self.env._kp_omega[env_ids] = torch.stack([kp_omega_rp, kp_omega_rp, kp_omega_y], dim=1)
-        self.env._ki_omega[env_ids] = torch.stack([ki_omega_rp, ki_omega_rp, ki_omega_y], dim=1)
-        self.env._kd_omega[env_ids] = torch.stack([kd_omega_rp, kd_omega_rp, kd_omega_y], dim=1)
-
-        tau_m = torch.full((n_reset,), self.env._tau_m_value, device=self.device)
-        self.env._tau_m[env_ids] = tau_m.unsqueeze(1).repeat(1, 4)
-
-        self.env._thrust_to_weight[env_ids] = self.env._twr_value
+        # Note: Fixed parameters are now initialized once in __init__ for better performance.
+        # If domain randomization is needed in the future, add parameter randomization here.
 
         self.env._prev_x_drone_wrt_gate = torch.ones(self.num_envs, device=self.device)
 
