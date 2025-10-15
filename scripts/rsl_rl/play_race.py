@@ -86,8 +86,8 @@ def main():
 
     if args_cli.follow_robot == -1:
         env_cfg.viewer.resolution = (1920, 1080)
-        env_cfg.viewer.eye = (0.0, 0.0, 8.0)
-        env_cfg.viewer.lookat = (0.0, 0.0, 0.0)
+        env_cfg.viewer.eye = (10.7, 0.4, 7.2)
+        env_cfg.viewer.lookat = (-2.7, 0.5, -0.3)
     elif args_cli.follow_robot >= 0:
         env_cfg.viewer.eye = (-0.8, 0.8, 0.8)
         env_cfg.viewer.resolution = (1920, 1080)
@@ -140,7 +140,10 @@ def main():
     )
 
     # reset environment
-    obs, _ = env.get_observations()
+    obs = env.get_observations()
+    # Extract tensor from TensorDict for policy
+    if hasattr(obs, "get"):  # Check if it's a TensorDict
+        obs = obs["policy"]  # Extract the policy observation
     timestep = 0
     # simulate environment
     while simulation_app.is_running():
@@ -149,7 +152,10 @@ def main():
             # agent stepping
             actions = policy(obs)
             # env stepping
-            obs, _, _, _ = env.step(actions)
+            obs, rewards, dones, infos = env.step(actions)
+            # Extract tensor from TensorDict for policy
+            if hasattr(obs, "get"):  # Check if it's a TensorDict
+                obs = obs["policy"]  # Extract the policy observation
         if args_cli.video:
             timestep += 1
             # Exit the play loop after recording one video
