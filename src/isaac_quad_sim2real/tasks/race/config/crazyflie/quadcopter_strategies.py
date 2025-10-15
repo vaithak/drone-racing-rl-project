@@ -133,7 +133,7 @@ class DefaultQuadcopterStrategy:
         # current_gate_yaw = self.env._waypoints[current_gate_idx, -1]    # Yaw orientation of current gate
 
         # Relative position to current gate in gate frame
-        # drone_pos_gate_frame = self.env._pose_drone_wrt_gate
+        drone_pos_gate_frame = self.env._pose_drone_wrt_gate
 
         # Relative position to current gate in body frame
         # gate_pos_b, _ = subtract_frame_transforms(
@@ -156,6 +156,7 @@ class DefaultQuadcopterStrategy:
                 drone_pose_w,       # position in the world frame (3 dims)
                 drone_lin_vel_b,    # velocity in the body frame (3 dims)
                 drone_quat_w,       # quaternion in the world frame (4 dims)
+                drone_pos_gate_frame
             ],
             # TODO ----- END -----
             dim=-1,
