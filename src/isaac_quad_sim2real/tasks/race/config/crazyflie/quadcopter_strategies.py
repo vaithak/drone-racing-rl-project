@@ -74,7 +74,7 @@ class DefaultQuadcopterStrategy:
         # TODO ----- START ----- Define the tensors required for your custom reward structure
         # check to change waypoint
         dist_to_gate = torch.linalg.norm(self.env._pose_drone_wrt_gate, dim=1)
-        gate_passed = dist_to_gate < 1.0
+        gate_passed = dist_to_gate < 0.1
         ids_gate_passed = torch.where(gate_passed)[0]
         self.env._idx_wp[ids_gate_passed] = (self.env._idx_wp[ids_gate_passed] + 1) % self.env._waypoints.shape[0]
 
