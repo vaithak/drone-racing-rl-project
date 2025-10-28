@@ -8,6 +8,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torch.nn.functional as F
 
 from rsl_rl.modules import ActorCritic
 from rsl_rl.storage import RolloutStorage
@@ -18,7 +19,7 @@ class PPO:
 
     actor_critic: ActorCritic
     """The actor critic module."""
-
+ 
     def __init__(
         self,
         actor_critic,
@@ -147,6 +148,59 @@ class PPO:
             _,  # rnd_state_batch - not used anymore
         ) in generator:
             # TODO ----- START -----
+            # Compute the new log probabilities, entropy, and values
+            # using the current policy given the observations and sampled actions.
+            self.actor_critic.act(observations)
+            new_log_probs = self.actor_critic.get_actions_log_prob(sampled_actions)
+            entropy = self.actor_critic.entropy
+            values = self.actor_critic.evaluate(critic_observations).squeeze(-1)
+            current_mean_actions = self.actor_critic.action_mean
+            current_action_stds = self.actor_critic.action_std
+
+            # Compute the ratio (pi_theta / pi_theta__old)
+            ratios = torch.exp(new_log_probs - prev_log_probs)
+
+            # Compute the surrogate loss
+            surr1 = ratios * advantage_estimates
+            surr2 = torch.clamp(ratios, 1.0 - self.clip_param, 1.0 + self.clip_param) * advantage_estimates
+            surrogate_loss = -torch.min(surr1, surr2).mean()
+
+            # Decide the learning rate based on the KL divergence and target KL
+            if self.schedule == "adaptive":
+                with torch.no_grad():
+                    kl_divergence = torch.log(current_action_stds / prev_action_stds + 1e-5).sum(-1) + \
+                                    (prev_action_stds.pow(2) + (prev_mean_actions - current_mean_actions).pow(2)) / (2.0 * current_action_stds.pow(2)) - 0.5
+                    kl_divergence_mean = kl_divergence.mean()
+                if kl_divergence_mean > 2.0 * self.desired_kl:
+                    self.learning_rate /= 1.5
+                elif kl_divergence_mean < self.desired_kl / 2.0:
+                    self.learning_rate *= 1.5
+                self.learning_rate = max(1e-5, min(self.learning_rate, 1e-2))
+                for param_group in self.optimizer.param_groups:
+                    param_group['lr'] = self.learning_rate
+
+            # Compute the value loss
+            value_loss = (values - discounted_returns).pow(2)
+            if self.use_clipped_value_loss:
+                clipped_values = value_targets + (values - value_targets).clamp(-self.clip_param, self.clip_param)
+                value_loss_clipped = (clipped_values - discounted_returns).pow(2)
+                value_loss = torch.max(value_loss, value_loss_clipped)
+            value_loss = value_loss.mean()
+
+            # Accumulate statistics
+            mean_value_loss += value_loss.item()
+            mean_surrogate_loss += surrogate_loss.item()
+            mean_entropy += entropy.mean().item()
+
+            # Combine losses
+            total_loss = surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy.mean()
+
+            # Perform backpropagation and optimization step
+            self.optimizer.zero_grad()
+            total_loss.backward()
+            nn.utils.clip_grad_norm_(self.actor_critic.parameters(), self.max_grad_norm)
+            self.optimizer.step()
+
             # Implement the PPO update step
             # TODO ----- END -----
 
