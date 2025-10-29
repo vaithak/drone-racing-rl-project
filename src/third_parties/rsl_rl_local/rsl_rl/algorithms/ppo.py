@@ -148,6 +148,14 @@ class PPO:
             _,  # rnd_state_batch - not used anymore
         ) in generator:
             # TODO ----- START -----
+
+            # Check if we should normalize advantages per mini batch
+            if self.normalize_advantage_per_mini_batch:
+                with torch.no_grad():
+                    advantages_estimates = (advantage_estimates - advantage_estimates.mean()) / (
+                        advantage_estimates.std() + 1e-6
+                    )
+
             # Compute the new log probabilities, entropy, and values
             # using the current policy given the observations and sampled actions.
             self.actor_critic.act(observations)
@@ -168,8 +176,13 @@ class PPO:
             # Decide the learning rate based on the KL divergence and target KL
             if self.schedule == "adaptive":
                 with torch.no_grad():
-                    kl_divergence = torch.log(current_action_stds / prev_action_stds + 1e-5).sum(-1) + \
-                                    (prev_action_stds.pow(2) + (prev_mean_actions - current_mean_actions).pow(2)) / (2.0 * current_action_stds.pow(2)) - 0.5
+                    kl_divergence = torch.sum(
+                        torch.log(current_action_stds / prev_action_stds + 1.0e-5)
+                        + (torch.square(prev_action_stds) + torch.square(prev_mean_actions - current_mean_actions))
+                        / (2.0 * torch.square(current_action_stds))
+                        - 0.5,
+                        axis=-1,
+                    )
                     kl_divergence_mean = kl_divergence.mean()
                 if kl_divergence_mean > 2.0 * self.desired_kl:
                     self.learning_rate /= 1.5
