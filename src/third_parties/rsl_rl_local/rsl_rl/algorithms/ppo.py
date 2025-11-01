@@ -152,7 +152,7 @@ class PPO:
             # Check if we should normalize advantages per mini batch
             if self.normalize_advantage_per_mini_batch:
                 with torch.no_grad():
-                    advantages_estimates = (advantage_estimates - advantage_estimates.mean()) / (
+                    advantage_estimates = (advantage_estimates - advantage_estimates.mean()) / (
                         advantage_estimates.std() + 1e-6
                     )
 
@@ -166,12 +166,12 @@ class PPO:
             current_action_stds = self.actor_critic.action_std
 
             # Compute the ratio (pi_theta / pi_theta__old)
-            ratios = torch.exp(new_log_probs - prev_log_probs)
+            ratios = torch.exp(new_log_probs - torch.squeeze(prev_log_probs))
 
             # Compute the surrogate loss
-            surr1 = ratios * advantage_estimates
-            surr2 = torch.clamp(ratios, 1.0 - self.clip_param, 1.0 + self.clip_param) * advantage_estimates
-            surrogate_loss = -torch.min(surr1, surr2).mean()
+            surr1 = - ratios * torch.squeeze(advantage_estimates)
+            surr2 = - torch.clamp(ratios, 1.0 - self.clip_param, 1.0 + self.clip_param) * torch.squeeze(advantage_estimates)
+            surrogate_loss = torch.max(surr1, surr2).mean()
 
             # Decide the learning rate based on the KL divergence and target KL
             if self.schedule == "adaptive":
@@ -183,7 +183,7 @@ class PPO:
                         - 0.5,
                         axis=-1,
                     )
-                    kl_divergence_mean = kl_divergence.mean()
+                    kl_divergence_mean = torch.mean(kl_divergence)
                 if kl_divergence_mean > 2.0 * self.desired_kl:
                     self.learning_rate /= 1.5
                 elif kl_divergence_mean < self.desired_kl / 2.0:
